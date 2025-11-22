@@ -1,0 +1,463 @@
+// ===================== PRISMA BASICS =====================
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===================== ENUMS =============================
+enum UserRole         { 
+  ADMIN 
+  DEAN 
+  HOD 
+  INSTRUCTOR 
+  }
+enum UserStatus       { 
+  ACTIVE 
+  INACTIVE 
+  }
+enum Semester         { 
+  FALL 
+  SPRING 
+  SUMMER 
+  }
+
+enum EvaluationStatus {
+  new
+  sent
+  complete
+  returned
+}
+enum EvaluationRole   { 
+  HOD 
+  DEAN 
+  }
+
+/// الأعمدة الرئيسة في التقييم (للاستخدام في الواجهات/التجميع)
+enum Pillar { 
+  RESEARCH 
+  UNIVERSITY_SERVICE 
+  COMMUNITY_SERVICE 
+  TEACHING_QUALITY 
+  }
+
+/// نطاقات/سلالم للتقييم (اختياري للعرض)
+enum RatingBand { 
+  HIGHLY_EXCEEDS 
+  EXCEEDS 
+  FULLY_MEETS 
+  PARTIALLY_MEETS 
+  NEEDS_IMPROVEMENT 
+  }
+
+enum ResearchKind {
+  ACCEPTED
+  PUBLISHED
+  IN_PROCESS
+  ARBITRATION
+  THESIS_SUPERVISION
+  FUNDED_PROJECT
+  CONTRACTUAL_RESEARCH
+  REGISTERED_PATENT
+  REFEREED_PAPER
+  OTHER
+}
+
+enum ResearchActivityType {
+  JOURNAL
+  CONFERENCE
+  OTHER
+}
+
+/// الأنشطة العلمية
+enum ScientificType { 
+  CONFERENCE 
+  SEMINAR 
+  WORKSHOP 
+  TRAINING 
+  OTHER 
+  }
+enum ScientificParticipation { 
+  MODERATOR 
+  COORDINATOR 
+  PRESENTER 
+  PARTICIPANT 
+  PAPER 
+  OTHER 
+  }
+
+// ===================== CORE ORG MODELS ===================
+model College {
+  id        Int          @id @default(autoincrement())
+  name      String       @unique
+  code      String       @unique
+  departments Department[]
+  users       User[] 
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+}
+
+model Department {
+  id         Int       @id @default(autoincrement())
+  name       String
+  code       String?
+  collegeId  Int
+  college    College   @relation(fields: [collegeId], references: [id], onDelete: Cascade)
+  users      User[]
+  hodUserId  Int?      // (اختياري) ربط مباشر لعضو HOD
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([collegeId])
+}
+
+model User {
+  id           Int         @id @default(autoincrement())
+  email        String      @unique
+  name         String
+  role         UserRole    @default(INSTRUCTOR)
+  status       UserStatus  @default(ACTIVE)
+  passwordHash String?
+  departmentId Int?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  collegeId    Int?
+  college      College?    @relation(fields: [collegeId], references: [id], onDelete: SetNull)
+
+  idNumber             String?
+  dateOfBirth          DateTime?
+  academicRank         String?
+  nationality          String?
+  generalSpecialization String?
+  specificSpecialization String?
+  dateOfEmployment     DateTime?
+  image                String?   // Profile image file path
+
+  appraisals   Appraisal[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Password reset tokens
+  passwordResetTokens PasswordResetToken[]
+
+  @@index([role, departmentId])
+}
+
+model AppraisalCycle {
+   id           Int       @id @default(autoincrement())
+   academicYear String    @unique
+   startDate    DateTime
+   endDate      DateTime
+   isActive     Boolean   @default(false)
+   appraisals   Appraisal[]
+   gradingConfigs   GradingConfig[]
+
+   createdAt    DateTime  @default(now())
+   updatedAt    DateTime  @updatedAt
+ }
+
+// ===================== APPRAISAL =========================
+model Appraisal {
+  id          Int            @id @default(autoincrement())
+  facultyId   Int
+  faculty     User           @relation(fields: [facultyId], references: [id], onDelete: Restrict)
+  cycleId     Int
+  cycle       AppraisalCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  // حالة سير العمل (NEW…RETURNED)
+  status      EvaluationStatus @default(new)
+
+  // درجات مُجمّعة (تُحدّث عند الحساب/الإرسال)
+  researchScore           Float?
+  universityServiceScore  Float?
+  communityServiceScore   Float?
+  teachingQualityScore    Float?
+  totalScore              Float?
+
+  submittedAt   DateTime?   // عندما يرسل صاحب النموذج إنجازاته
+  hodReviewedAt DateTime?
+  deanReviewedAt DateTime?
+
+  // علاقات الإنجازات
+  awards             Award[]
+  courses            CourseTaught[]
+  researchActivities ResearchActivity[]
+  scientificActivities ScientificActivity[]
+  universityServices UniversityService[]
+  communityServices  CommunityService[]
+  evidences          Evidence[]
+
+  // تقييمات الدور (HOD/DEAN) – يمكن أن يوجد أحدهما فقط أو كلاهما حسب الحالة
+  evaluations Evaluation[]
+
+  // الاعتمادات/التظلّم
+  appeals     Appeal[]
+  signatures  Signature[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([facultyId, cycleId], name: "by_faculty_cycle")
+  @@index([status])
+}
+
+// سجل/نتائج التقييم لكل دور (واحد لكل role لكل appraisal)
+model Evaluation {
+  id          Int            @id @default(autoincrement())
+  appraisalId Int
+  appraisal   Appraisal      @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  role        EvaluationRole // HOD يقيّم عضو هيئة التدريس | DEAN يقيّم HOD
+  startedAt   DateTime?
+  submittedAt DateTime?
+
+  // النقاط المحسوبة لكل عمود (حسب الأوزان 30/20/20/30)
+  researchPts          Float?  // 0..30
+  researchBand         RatingBand?
+  researchExplanation  String?
+  universityServicePts Float?  // 0..20
+  universityServiceBand RatingBand?
+  universityServiceExplanation String?
+  communityServicePts  Float?  // 0..20
+  communityServiceBand RatingBand?
+  communityServiceExplanation String?
+  teachingQualityPts   Float?  // 0..30
+  teachingQualityBand  RatingBand?
+  teachingQualityExplanation String?
+  capabilitiesPts      Float?
+  capabilitiesBand     RatingBand?
+  capabilitiesExplanation String?
+  totalScore           Float?
+
+  rubric Json? // تفاصيل الحسبة (counts/avg/band…)
+
+  notes  String?
+
+  // مثال تقييم سلوكي اختياري (4 قدرات) يمكن تخزينه داخل rubric أو جدول فرعي
+  behaviorRatings BehaviorRating[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([appraisalId, role]) // يسمح بسجلّين كحد أقصى (HOD, DEAN)
+}
+
+// تقييمات القدرات السلوكية (اختياري)
+model BehaviorRating {
+  id           Int         @id @default(autoincrement())
+  evaluationId Int
+  evaluation   Evaluation  @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  capacity     String      // مثل: "Institutional Commitment" إلخ، أو استبدلها بـ enum لو أردت
+  band         RatingBand
+  points       Int
+
+  @@unique([evaluationId, capacity])
+}
+
+// ===================== ACHIEVEMENTS ======================
+
+model Award {
+  id           Int       @id @default(autoincrement())
+  appraisalId  Int
+  appraisal    Appraisal @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  name         String
+  area         String?
+  organization String?
+  dateObtained DateTime?
+  attachment   String?   // File attachment uploaded from device
+  fileUrl      String?
+  fileKey      String?
+
+  createdAt    DateTime  @default(now())
+
+  @@index([appraisalId])
+}
+
+model CourseTaught {
+  id              Int       @id @default(autoincrement())
+  appraisalId     Int
+  appraisal       Appraisal @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  academicYear    String
+  semester        Semester
+  courseCode      String?
+  section         String?
+  courseTitle     String
+  credit          Float?
+  studentsCount   Int?
+  studentsEvalAvg Float?  
+
+  createdAt       DateTime  @default(now())
+
+  @@index([appraisalId, semester])
+}
+
+model ResearchActivity {
+  id              Int        @id @default(autoincrement())
+  appraisalId     Int
+  appraisal       Appraisal  @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  title           String
+  type            ResearchActivityType
+  kind            ResearchKind
+  journalOrPublisher String?
+  participation   String? // MAIN_AUTHOR/CO_AUTHOR… (يمكنك تحويلها enum لاحقًا)
+  publicationDate DateTime?
+  refereedArticleRef String?
+  refereeDecisionDate DateTime?
+
+  attachment      String? // File attachment uploaded from device
+  fileUrl         String?
+  fileKey         String?
+
+  createdAt       DateTime @default(now())
+
+  @@index([appraisalId, kind])
+}
+
+model ScientificActivity {
+  id             Int        @id @default(autoincrement())
+  appraisalId    Int
+  appraisal      Appraisal  @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  title          String
+  type           ScientificType
+  date           DateTime?
+  participation  ScientificParticipation?
+  organizingAuth String?
+  venue          String?
+
+  attachment     String? // File attachment uploaded from device
+  fileUrl        String?
+  fileKey        String?
+
+  createdAt      DateTime @default(now())
+
+  @@index([appraisalId, type])
+}
+
+model UniversityService {
+  id              Int       @id @default(autoincrement())
+  appraisalId     Int
+  appraisal       Appraisal @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  committeeOrTask String
+  authority       String?
+  participation   String?
+  dateFrom        DateTime?
+  dateTo          DateTime?
+
+  attachment      String? // File attachment uploaded from device
+  fileUrl         String?
+  fileKey         String?
+
+  createdAt       DateTime  @default(now())
+
+  @@index([appraisalId, dateFrom, dateTo])
+}
+
+model CommunityService {
+  id              Int       @id @default(autoincrement())
+  appraisalId     Int
+  appraisal       Appraisal @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  committeeOrTask String
+  authority       String?
+  participation   String?
+  dateFrom        DateTime?
+  dateTo          DateTime?
+
+  attachment      String? // File attachment uploaded from device
+  fileUrl         String?
+  fileKey         String?
+
+  createdAt       DateTime  @default(now())
+
+  @@index([appraisalId, dateFrom, dateTo])
+}
+
+model Evidence {
+  id          Int       @id @default(autoincrement())
+  appraisalId Int
+  appraisal   Appraisal @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String?
+  url         String?
+  fileKey     String?
+  points      Float?
+
+  // معلومات ربط الملف بالإنجاز الصحيح
+  achievementType String? // 'awards', 'research', 'scientific', 'university', 'community'
+  linkedAchievementId Int? // ID الإنجاز في الجدول الصحيح بعد إنشائه
+
+  createdAt   DateTime  @default(now())
+}
+
+// ===================== APPEALS & SIGNATURES ==============
+model Appeal {
+  id            Int       @id @default(autoincrement())
+  appraisalId   Int
+  appraisal     Appraisal @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  byUserId      Int
+  message       String
+  createdAt     DateTime  @default(now())
+  resolvedAt    DateTime?
+  resolutionNote String?
+}
+
+model Signature {
+  id          Int       @id @default(autoincrement())
+  appraisalId Int
+  appraisal   Appraisal @relation(fields: [appraisalId], references: [id], onDelete: Cascade)
+
+  signerId    Int?      // من وقّع (الدكتور/الرئيس/العميد)
+  signerRole  UserRole
+  signedAt    DateTime?
+  note        String?
+}
+
+model GradingConfig {
+  id                         Int       @id @default(autoincrement())
+  // Scope: use GLOBAL when applying default for all cycles; otherwise bind to a specific cycle
+  scope                      String    @default("GLOBAL") // GLOBAL | CYCLE
+  cycleId                    Int?
+  cycle                      AppraisalCycle? @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  researchWeight             Int       @default(30)
+  universityServiceWeight    Int       @default(20)
+  communityServiceWeight     Int       @default(20)
+  teachingQualityWeight      Int       @default(30)
+
+  servicePointsPerItem       Int       @default(4)
+  serviceMaxPoints           Int       @default(20)
+
+  // e.g. [{min:90, points:30, band:"HIGHLY_EXCEEDS"}, {min:80, points:24, band:"EXCEEDS"}, ...]
+  teachingBands              Json
+
+  // Optional mapping for research kinds → points, e.g. { PUBLISHED: 10, ACCEPTED: 8, REFEREED_PAPER: 4 }
+  researchMap                Json?
+
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+}
+
+// Password reset token for password recovery
+model PasswordResetToken {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+}
+
